@@ -29,21 +29,18 @@
 
 #![forbid(missing_docs)]
 #![cfg_attr(all(feature = "nightly", test), feature(test))]
-
 #![cfg_attr(feature = "clippy", feature(plugin))]
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(feature = "clippy", deny(clippy))]
 
+extern crate dashmap;
 // Optional Serde support
-#[cfg(feature = "serde_impl")]
 pub mod serde;
-// Optional Heapsize support
-#[cfg(feature = "heapsize_impl")]
-mod heapsize;
 
+use dashmap::DashMap;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::{self, HashMap};
+use std::collections::hash_map::{self};
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter;
@@ -52,7 +49,9 @@ use std::mem;
 use std::ops::{Index, IndexMut};
 use std::ptr;
 
-struct KeyRef<K> { k: *const K }
+struct KeyRef<K> {
+    k: *const K,
+}
 
 struct Node<K, V> {
     next: *mut Node<K, V>,
@@ -63,7 +62,7 @@ struct Node<K, V> {
 
 /// A linked hash map.
 pub struct LinkedHashMap<K, V, S = hash_map::RandomState> {
-    map: HashMap<KeyRef<K>, *mut Node<K, V>, S>,
+    map: DashMap<KeyRef<K>, *mut Node<K, V>, S>,
     head: *mut Node<K, V>,
     free: *mut Node<K, V>,
 }
@@ -76,7 +75,7 @@ impl<K: Hash> Hash for KeyRef<K> {
 
 impl<K: PartialEq> PartialEq for KeyRef<K> {
     fn eq(&self, other: &Self) -> bool {
-        unsafe{ (*self.k).eq(&*other.k) }
+        unsafe { (*self.k).eq(&*other.k) }
     }
 }
 
@@ -90,10 +89,15 @@ impl<K: Eq> Eq for KeyRef<K> {}
 struct Qey<Q: ?Sized>(Q);
 
 impl<Q: ?Sized> Qey<Q> {
-    fn from_ref(q: &Q) -> &Self { unsafe { mem::transmute(q) } }
+    fn from_ref(q: &Q) -> &Self {
+        unsafe { mem::transmute(q) }
+    }
 }
 
-impl<K, Q: ?Sized> Borrow<Qey<Q>> for KeyRef<K> where K: Borrow<Q> {
+impl<K, Q: ?Sized> Borrow<Qey<Q>> for KeyRef<K>
+where
+    K: Borrow<Q>,
+{
     fn borrow(&self) -> &Qey<Q> {
         Qey::from_ref(unsafe { (*self.k).borrow() })
     }
@@ -123,11 +127,13 @@ unsafe fn drop_empty_node<K, V>(the_box: *mut Node<K, V>) {
 
 impl<K: Hash + Eq, V> LinkedHashMap<K, V> {
     /// Creates a linked hash map.
-    pub fn new() -> Self { Self::with_map(HashMap::new()) }
+    pub fn new() -> Self {
+        Self::with_map(DashMap::new())
+    }
 
     /// Creates an empty linked hash map with the given initial capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_map(HashMap::with_capacity(capacity))
+        Self::with_map(DashMap::with_capacity(capacity))
     }
 }
 
@@ -163,7 +169,7 @@ impl<K, V, S> LinkedHashMap<K, V, S> {
     fn clear_free_list(&mut self) {
         unsafe {
             let mut free = self.free;
-            while ! free.is_null() {
+            while !free.is_null() {
                 let next_free = (*free).next;
                 drop_empty_node(free);
                 free = next_free;
@@ -177,7 +183,7 @@ impl<K, V, S> LinkedHashMap<K, V, S> {
             // allocate the guard node if not present
             unsafe {
                 let node_layout = std::alloc::Layout::new::<Node<K, V>>();
-                self.head =  std::alloc::alloc(node_layout) as *mut Node<K, V>;
+                self.head = std::alloc::alloc(node_layout) as *mut Node<K, V>;
                 (*self.head).next = self.head;
                 (*self.head).prev = self.head;
             }
@@ -185,8 +191,8 @@ impl<K, V, S> LinkedHashMap<K, V, S> {
     }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
-    fn with_map(map: HashMap<KeyRef<K>, *mut Node<K, V>, S>) -> Self {
+impl<'a, K: 'a + Eq + Hash, V: 'a, S: BuildHasher + Clone> LinkedHashMap<K, V, S> {
+    fn with_map(map: DashMap<KeyRef<K>, *mut Node<K, V>, S>) -> Self {
         LinkedHashMap {
             map: map,
             head: ptr::null_mut(),
@@ -196,12 +202,12 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
 
     /// Creates an empty linked hash map with the given initial hash builder.
     pub fn with_hasher(hash_builder: S) -> Self {
-        Self::with_map(HashMap::with_hasher(hash_builder))
+        Self::with_map(DashMap::with_hasher(hash_builder))
     }
 
     /// Creates an empty linked hash map with the given initial capacity and hash builder.
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
-        Self::with_map(HashMap::with_capacity_and_hasher(capacity, hash_builder))
+        Self::with_map(DashMap::with_capacity_and_hasher(capacity, hash_builder))
     }
 
     /// Reserves capacity for at least `additional` more elements to be inserted into the map. The
@@ -210,7 +216,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     /// # Panics
     ///
     /// Panics if the new allocation size overflows `usize.`
-    pub fn reserve(&mut self, additional: usize) { self.map.reserve(additional); }
+    //pub fn reserve(&mut self, additional: usize) { self.map.reserve(additional); }
 
     /// Shrinks the capacity of the map as much as possible. It will drop down as much as possible
     /// while maintaining the internal rules and possibly leaving some space in accordance with the
@@ -242,7 +248,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     pub fn entry(&mut self, k: K) -> Entry<K, V, S> {
         let self_ptr: *mut Self = self;
 
-        if let Some(entry) = self.map.get_mut(&KeyRef{k: &k}) {
+        if let Some(entry) = self.map.get_mut(&KeyRef { k: &k }) {
             return Entry::Occupied(OccupiedEntry {
                 entry: *entry,
                 map: self_ptr,
@@ -250,10 +256,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
             });
         }
 
-        Entry::Vacant(VacantEntry {
-            key: k,
-            map: self,
-        })
+        Entry::Vacant(VacantEntry { key: k, map: self })
     }
 
     /// Returns an iterator visiting all entries in insertion order.
@@ -279,7 +282,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     /// assert_eq!(&17, map.get(&"a").unwrap());
     /// ```
     pub fn entries(&mut self) -> Entries<K, V, S> {
-        let head = if ! self.head.is_null() {
+        let head = if !self.head.is_null() {
             unsafe { (*self.head).prev }
         } else {
             ptr::null_mut()
@@ -309,7 +312,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         self.ensure_guard_node();
 
-        let (node, old_val) = match self.map.get(&KeyRef{k: &k}) {
+        let (node, old_val) = match self.map.get(&KeyRef { k: &k }) {
             Some(node) => {
                 let old_val = unsafe { ptr::replace(&mut (**node).value, v) };
                 (*node, Some(old_val))
@@ -337,7 +340,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
             }
             None => {
                 let keyref = unsafe { &(*node).key };
-                self.map.insert(KeyRef{k: keyref}, node);
+                self.map.insert(KeyRef { k: keyref }, node);
                 self.attach(node);
             }
         }
@@ -345,7 +348,11 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     }
 
     /// Checks if the map contains the given key.
-    pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool where K: Borrow<Q>, Q: Eq + Hash {
+    pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         self.map.contains_key(Qey::from_ref(k))
     }
 
@@ -365,8 +372,14 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     /// assert_eq!(map.get(&1), Some(&"a"));
     /// assert_eq!(map.get(&2), Some(&"c"));
     /// ```
-    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V> where K: Borrow<Q>, Q: Eq + Hash {
-        self.map.get(Qey::from_ref(k)).map(|e| unsafe { &(**e).value })
+    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.map
+            .get(Qey::from_ref(k))
+            .map(|e| unsafe { &(**e).value })
     }
 
     /// Returns the mutable reference corresponding to the key in the map.
@@ -383,8 +396,14 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     /// *map.get_mut(&1).unwrap() = "c";
     /// assert_eq!(map.get(&1), Some(&"c"));
     /// ```
-    pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V> where K: Borrow<Q>, Q: Eq + Hash {
-        self.map.get(Qey::from_ref(k)).map(|e| unsafe { &mut (**e).value })
+    pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.map
+            .get(Qey::from_ref(k))
+            .map(|e| unsafe { &mut (**e).value })
     }
 
     /// Returns the value corresponding to the key in the map.
@@ -406,12 +425,14 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     ///
     /// assert_eq!((&2, &"b"), map.iter().rev().next().unwrap());
     /// ```
-    pub fn get_refresh<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V> where K: Borrow<Q>, Q: Eq + Hash {
+    pub fn get_refresh<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         let (value, node_ptr_opt) = match self.map.get(Qey::from_ref(k)) {
             None => (None, None),
-            Some(node) => {
-                (Some(unsafe { &mut (**node).value }), Some(*node))
-            }
+            Some(node) => (Some(unsafe { &mut (**node).value }), Some(*node)),
         };
         if let Some(node_ptr) = node_ptr_opt {
             self.detach(node_ptr);
@@ -435,17 +456,21 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     /// assert_eq!(map.remove(&2), None);
     /// assert_eq!(map.len(), 0);
     /// ```
-    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V> where K: Borrow<Q>, Q: Eq + Hash {
+    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash,
+    {
         let removed = self.map.remove(Qey::from_ref(k));
         removed.map(|node| {
-            self.detach(node);
+            self.detach(node.1);
             unsafe {
                 // add to free list
-                (*node).next = self.free;
-                self.free = node;
+                (*node.1).next = self.free;
+                self.free = node.1;
                 // drop the key and return the value
-                drop(ptr::read(&(*node).key));
-                ptr::read(&(*node).value)
+                drop(ptr::read(&(*node.1).key));
+                ptr::read(&(*node.1).value)
             }
         })
     }
@@ -481,14 +506,16 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     #[inline]
     pub fn pop_front(&mut self) -> Option<(K, V)> {
         if self.is_empty() {
-            return None
+            return None;
         }
         let lru = unsafe { (*self.head).prev };
         self.detach(lru);
         self.map
-            .remove(&KeyRef{k: unsafe { &(*lru).key }})
+            .remove(&KeyRef {
+                k: unsafe { &(*lru).key },
+            })
             .map(|e| {
-                let e = *unsafe { Box::from_raw(e) };
+                let e = *unsafe { Box::from_raw(e.1) };
                 (e.key, e.value)
             })
     }
@@ -507,11 +534,13 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     #[inline]
     pub fn front(&self) -> Option<(&K, &V)> {
         if self.is_empty() {
-            return None
+            return None;
         }
         let lru = unsafe { (*self.head).prev };
         self.map
-            .get(&KeyRef{k: unsafe { &(*lru).key }})
+            .get(&KeyRef {
+                k: unsafe { &(*lru).key },
+            })
             .map(|e| unsafe { (&(**e).key, &(**e).value) })
     }
 
@@ -531,14 +560,16 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     #[inline]
     pub fn pop_back(&mut self) -> Option<(K, V)> {
         if self.is_empty() {
-            return None
+            return None;
         }
         let mru = unsafe { (*self.head).next };
         self.detach(mru);
         self.map
-            .remove(&KeyRef{k: unsafe { &(*mru).key }})
+            .remove(&KeyRef {
+                k: unsafe { &(*mru).key },
+            })
             .map(|e| {
-                let e = *unsafe { Box::from_raw(e) };
+                let e = *unsafe { Box::from_raw(e.1) };
                 (e.key, e.value)
             })
     }
@@ -557,19 +588,25 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     #[inline]
     pub fn back(&mut self) -> Option<(&K, &V)> {
         if self.is_empty() {
-            return None
+            return None;
         }
         let mru = unsafe { (*self.head).next };
         self.map
-            .get(&KeyRef{k: unsafe { &(*mru).key }})
+            .get(&KeyRef {
+                k: unsafe { &(*mru).key },
+            })
             .map(|e| unsafe { (&(**e).key, &(**e).value) })
     }
 
     /// Returns the number of key-value pairs in the map.
-    pub fn len(&self) -> usize { self.map.len() }
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
 
     /// Returns whether the map is currently empty.
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Returns a reference to the map's hasher.
     pub fn hasher(&self) -> &S {
@@ -580,7 +617,7 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
     pub fn clear(&mut self) {
         self.map.clear();
         // update the guard node if present
-        if ! self.head.is_null() {
+        if !self.head.is_null() {
             unsafe {
                 self.drop_entries();
                 (*self.head).prev = self.head;
@@ -699,7 +736,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> LinkedHashMap<K, V, S> {
 }
 
 impl<'a, K, V, S, Q: ?Sized> Index<&'a Q> for LinkedHashMap<K, V, S>
-    where K: Hash + Eq + Borrow<Q>, S: BuildHasher, Q: Eq + Hash
+where
+    K: Hash + Eq + Borrow<Q>,
+    S: BuildHasher + Clone,
+    Q: Eq + Hash,
 {
     type Output = V;
 
@@ -709,7 +749,10 @@ impl<'a, K, V, S, Q: ?Sized> Index<&'a Q> for LinkedHashMap<K, V, S>
 }
 
 impl<'a, K, V, S, Q: ?Sized> IndexMut<&'a Q> for LinkedHashMap<K, V, S>
-    where K: Hash + Eq + Borrow<Q>, S: BuildHasher, Q: Eq + Hash
+where
+    K: Hash + Eq + Borrow<Q>,
+    S: BuildHasher + Clone,
+    Q: Eq + Hash,
 {
     fn index_mut(&mut self, index: &'a Q) -> &mut V {
         self.get_mut(index).expect("no entry found for key")
@@ -724,12 +767,14 @@ impl<K: Hash + Eq + Clone, V: Clone, S: BuildHasher + Clone> Clone for LinkedHas
     }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher + Default> Default for LinkedHashMap<K, V, S> {
-    fn default() -> Self { Self::with_hasher(S::default()) }
+impl<K: Hash + Eq, V, S: BuildHasher + Default + Clone> Default for LinkedHashMap<K, V, S> {
+    fn default() -> Self {
+        Self::with_hasher(S::default())
+    }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher> Extend<(K, V)> for LinkedHashMap<K, V, S> {
-    fn extend<I: IntoIterator<Item=(K, V)>>(&mut self, iter: I) {
+impl<K: Hash + Eq, V, S: BuildHasher + Clone> Extend<(K, V)> for LinkedHashMap<K, V, S> {
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (k, v) in iter {
             self.insert(k, v);
         }
@@ -737,7 +782,10 @@ impl<K: Hash + Eq, V, S: BuildHasher> Extend<(K, V)> for LinkedHashMap<K, V, S> 
 }
 
 impl<'a, K, V, S> Extend<(&'a K, &'a V)> for LinkedHashMap<K, V, S>
-    where K: 'a + Hash + Eq + Copy, V: 'a + Copy, S: BuildHasher,
+where
+    K: 'a + Hash + Eq + Copy,
+    V: 'a + Copy,
+    S: BuildHasher + Clone,
 {
     fn extend<I: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: I) {
         for (&k, &v) in iter {
@@ -746,8 +794,10 @@ impl<'a, K, V, S> Extend<(&'a K, &'a V)> for LinkedHashMap<K, V, S>
     }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher + Default> iter::FromIterator<(K, V)> for LinkedHashMap<K, V, S> {
-    fn from_iter<I: IntoIterator<Item=(K, V)>>(iter: I) -> Self {
+impl<K: Hash + Eq, V, S: BuildHasher + Default + Clone> iter::FromIterator<(K, V)>
+    for LinkedHashMap<K, V, S>
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let mut map = Self::with_capacity_and_hasher(iter.size_hint().0, S::default());
         map.extend(iter);
@@ -755,22 +805,26 @@ impl<K: Hash + Eq, V, S: BuildHasher + Default> iter::FromIterator<(K, V)> for L
     }
 }
 
-impl<A: fmt::Debug + Hash + Eq, B: fmt::Debug, S: BuildHasher> fmt::Debug for LinkedHashMap<A, B, S> {
+impl<A: fmt::Debug + Hash + Eq, B: fmt::Debug, S: BuildHasher + Clone> fmt::Debug
+    for LinkedHashMap<A, B, S>
+{
     /// Returns a string that lists the key-value pairs in insertion order.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_map().entries(self).finish()
     }
 }
 
-impl<K: Hash + Eq, V: PartialEq, S: BuildHasher> PartialEq for LinkedHashMap<K, V, S> {
+impl<K: Hash + Eq, V: PartialEq, S: BuildHasher + Clone> PartialEq for LinkedHashMap<K, V, S> {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.iter().eq(other)
     }
 }
 
-impl<K: Hash + Eq, V: Eq, S: BuildHasher> Eq for LinkedHashMap<K, V, S> {}
+impl<K: Hash + Eq, V: Eq, S: BuildHasher + Clone> Eq for LinkedHashMap<K, V, S> {}
 
-impl<K: Hash + Eq + PartialOrd, V: PartialOrd, S: BuildHasher> PartialOrd for LinkedHashMap<K, V, S> {
+impl<K: Hash + Eq + PartialOrd, V: PartialOrd, S: BuildHasher + Clone> PartialOrd
+    for LinkedHashMap<K, V, S>
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.iter().partial_cmp(other)
     }
@@ -792,14 +846,18 @@ impl<K: Hash + Eq + PartialOrd, V: PartialOrd, S: BuildHasher> PartialOrd for Li
     }
 }
 
-impl<K: Hash + Eq + Ord, V: Ord, S: BuildHasher> Ord for LinkedHashMap<K, V, S> {
+impl<K: Hash + Eq + Ord, V: Ord, S: BuildHasher + Clone> Ord for LinkedHashMap<K, V, S> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.iter().cmp(other)
     }
 }
 
-impl<K: Hash + Eq, V: Hash, S: BuildHasher> Hash for LinkedHashMap<K, V, S> {
-    fn hash<H: Hasher>(&self, h: &mut H) { for e in self.iter() { e.hash(h); } }
+impl<K: Hash + Eq, V: Hash, S: BuildHasher + Clone> Hash for LinkedHashMap<K, V, S> {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        for e in self.iter() {
+            e.hash(h);
+        }
+    }
 }
 
 unsafe impl<K: Send, V: Send, S: Send> Send for LinkedHashMap<K, V, S> {}
@@ -853,38 +911,88 @@ pub struct Entries<'a, K: 'a, V: 'a, S: 'a = hash_map::RandomState> {
     marker: marker::PhantomData<(&'a K, &'a mut V, &'a S)>,
 }
 
-unsafe impl<'a, K, V> Send for Iter<'a, K, V> where K: Send, V: Send {}
-
-unsafe impl<'a, K, V> Send for IterMut<'a, K, V> where K: Send, V: Send {}
-
-unsafe impl<K, V> Send for IntoIter<K, V> where K: Send, V: Send {}
-
-unsafe impl<'a, K, V, S> Send for Entries<'a, K, V, S> where K: Send, V: Send, S: Send {}
-
-unsafe impl<'a, K, V> Sync for Iter<'a, K, V> where K: Sync, V: Sync {}
-
-unsafe impl<'a, K, V> Sync for IterMut<'a, K, V> where K: Sync, V: Sync {}
-
-unsafe impl<K, V> Sync for IntoIter<K, V> where K: Sync, V: Sync {}
-
-unsafe impl<'a, K, V, S> Sync for Entries<'a, K, V, S> where K: Sync, V: Sync, S: Sync {}
-
-impl<'a, K, V> Clone for Iter<'a, K, V> {
-    fn clone(&self) -> Self { Iter { ..*self } }
+unsafe impl<'a, K, V> Send for Iter<'a, K, V>
+where
+    K: Send,
+    V: Send,
+{
 }
 
-impl<K, V> Clone for IntoIter<K, V> where K: Clone, V: Clone {
+unsafe impl<'a, K, V> Send for IterMut<'a, K, V>
+where
+    K: Send,
+    V: Send,
+{
+}
+
+unsafe impl<K, V> Send for IntoIter<K, V>
+where
+    K: Send,
+    V: Send,
+{
+}
+
+unsafe impl<'a, K, V, S> Send for Entries<'a, K, V, S>
+where
+    K: Send,
+    V: Send,
+    S: Send,
+{
+}
+
+unsafe impl<'a, K, V> Sync for Iter<'a, K, V>
+where
+    K: Sync,
+    V: Sync,
+{
+}
+
+unsafe impl<'a, K, V> Sync for IterMut<'a, K, V>
+where
+    K: Sync,
+    V: Sync,
+{
+}
+
+unsafe impl<K, V> Sync for IntoIter<K, V>
+where
+    K: Sync,
+    V: Sync,
+{
+}
+
+unsafe impl<'a, K, V, S> Sync for Entries<'a, K, V, S>
+where
+    K: Sync,
+    V: Sync,
+    S: Sync,
+{
+}
+
+impl<'a, K, V> Clone for Iter<'a, K, V> {
+    fn clone(&self) -> Self {
+        Iter { ..*self }
+    }
+}
+
+impl<K, V> Clone for IntoIter<K, V>
+where
+    K: Clone,
+    V: Clone,
+{
     fn clone(&self) -> Self {
         if self.remaining == 0 {
-            return IntoIter { ..*self }
+            return IntoIter { ..*self };
         }
 
         fn clone_node<K, V>(e: *mut Node<K, V>) -> *mut Node<K, V>
-            where K: Clone, V: Clone,
+        where
+            K: Clone,
+            V: Clone,
         {
-            Box::into_raw(Box::new(Node::new(
-                unsafe { (*e).key.clone() }, unsafe { (*e).value.clone() }
-            )))
+            Box::into_raw(Box::new(Node::new(unsafe { (*e).key.clone() }, unsafe {
+                (*e).value.clone()
+            })))
         }
 
         let mut cur = self.head;
@@ -955,7 +1063,7 @@ impl<K, V> Iterator for IntoIter<K, V> {
 
     fn next(&mut self) -> Option<(K, V)> {
         if self.remaining == 0 {
-            return None
+            return None;
         }
         self.remaining -= 1;
         unsafe {
@@ -1028,7 +1136,7 @@ impl<'a, K, V> DoubleEndedIterator for IterMut<'a, K, V> {
 impl<K, V> DoubleEndedIterator for IntoIter<K, V> {
     fn next_back(&mut self) -> Option<(K, V)> {
         if self.remaining == 0 {
-            return None
+            return None;
         }
         self.remaining -= 1;
         unsafe {
@@ -1041,15 +1149,21 @@ impl<K, V> DoubleEndedIterator for IntoIter<K, V> {
 }
 
 impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
-    fn len(&self) -> usize { self.remaining }
+    fn len(&self) -> usize {
+        self.remaining
+    }
 }
 
 impl<'a, K, V> ExactSizeIterator for IterMut<'a, K, V> {
-    fn len(&self) -> usize { self.remaining }
+    fn len(&self) -> usize {
+        self.remaining
+    }
 }
 
 impl<K, V> ExactSizeIterator for IntoIter<K, V> {
-    fn len(&self) -> usize { self.remaining }
+    fn len(&self) -> usize {
+        self.remaining
+    }
 }
 
 impl<K, V> Drop for IntoIter<K, V> {
@@ -1070,22 +1184,37 @@ pub struct Keys<'a, K: 'a, V: 'a> {
 }
 
 impl<'a, K, V> Clone for Keys<'a, K, V> {
-    fn clone(&self) -> Self { Keys { inner: self.inner.clone() } }
+    fn clone(&self) -> Self {
+        Keys {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<'a, K, V> Iterator for Keys<'a, K, V> {
     type Item = &'a K;
 
-    #[inline] fn next(&mut self) -> Option<&'a K> { self.inner.next().map(|e| e.0) }
-    #[inline] fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+    #[inline]
+    fn next(&mut self) -> Option<&'a K> {
+        self.inner.next().map(|e| e.0)
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
 
 impl<'a, K, V> DoubleEndedIterator for Keys<'a, K, V> {
-    #[inline] fn next_back(&mut self) -> Option<&'a K> { self.inner.next_back().map(|e| e.0) }
+    #[inline]
+    fn next_back(&mut self) -> Option<&'a K> {
+        self.inner.next_back().map(|e| e.0)
+    }
 }
 
 impl<'a, K, V> ExactSizeIterator for Keys<'a, K, V> {
-    fn len(&self) -> usize { self.inner.len() }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
 }
 
 /// An insertion-order iterator over a `LinkedHashMap`'s values.
@@ -1094,37 +1223,56 @@ pub struct Values<'a, K: 'a, V: 'a> {
 }
 
 impl<'a, K, V> Clone for Values<'a, K, V> {
-    fn clone(&self) -> Self { Values { inner: self.inner.clone() } }
+    fn clone(&self) -> Self {
+        Values {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<'a, K, V> Iterator for Values<'a, K, V> {
     type Item = &'a V;
 
-    #[inline] fn next(&mut self) -> Option<&'a V> { self.inner.next().map(|e| e.1) }
-    #[inline] fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+    #[inline]
+    fn next(&mut self) -> Option<&'a V> {
+        self.inner.next().map(|e| e.1)
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
 
 impl<'a, K, V> DoubleEndedIterator for Values<'a, K, V> {
-    #[inline] fn next_back(&mut self) -> Option<&'a V> { self.inner.next_back().map(|e| e.1) }
+    #[inline]
+    fn next_back(&mut self) -> Option<&'a V> {
+        self.inner.next_back().map(|e| e.1)
+    }
 }
 
 impl<'a, K, V> ExactSizeIterator for Values<'a, K, V> {
-    fn len(&self) -> usize { self.inner.len() }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a LinkedHashMap<K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> IntoIterator for &'a LinkedHashMap<K, V, S> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
-    fn into_iter(self) -> Iter<'a, K, V> { self.iter() }
+    fn into_iter(self) -> Iter<'a, K, V> {
+        self.iter()
+    }
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> IntoIterator for &'a mut LinkedHashMap<K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> IntoIterator for &'a mut LinkedHashMap<K, V, S> {
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
-    fn into_iter(self) -> IterMut<'a, K, V> { self.iter_mut() }
+    fn into_iter(self) -> IterMut<'a, K, V> {
+        self.iter_mut()
+    }
 }
 
-impl<K: Hash + Eq, V, S: BuildHasher> IntoIterator for LinkedHashMap<K, V, S> {
+impl<K: Hash + Eq, V, S: BuildHasher + Clone> IntoIterator for LinkedHashMap<K, V, S> {
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
     fn into_iter(mut self) -> IntoIter<K, V> {
@@ -1140,7 +1288,9 @@ impl<K: Hash + Eq, V, S: BuildHasher> IntoIterator for LinkedHashMap<K, V, S> {
         }
         self.clear_free_list();
         // drop the HashMap but not the LinkedHashMap
-        unsafe { ptr::drop_in_place(&mut self.map); }
+        unsafe {
+            ptr::drop_in_place(&mut self.map);
+        }
         mem::forget(self);
 
         IntoIter {
@@ -1173,7 +1323,7 @@ pub struct VacantEntry<'a, K: 'a, V: 'a, S: 'a = hash_map::RandomState> {
     map: &'a mut LinkedHashMap<K, V, S>,
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> Entry<'a, K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> Entry<'a, K, V, S> {
     /// Returns the entry key
     ///
     /// # Examples
@@ -1211,7 +1361,7 @@ impl<'a, K: Hash + Eq, V, S: BuildHasher> Entry<'a, K, V, S> {
     }
 }
 
-impl<'a, K: Hash + Eq, V, S: BuildHasher> OccupiedEntry<'a, K, V, S> {
+impl<'a, K: Hash + Eq, V, S: BuildHasher + Clone> OccupiedEntry<'a, K, V, S> {
     /// Gets a reference to the entry key
     ///
     /// # Examples
@@ -1266,7 +1416,7 @@ impl<'a, K: Hash + Eq, V, S: BuildHasher> OccupiedEntry<'a, K, V, S> {
     }
 }
 
-impl<'a, K: 'a + Hash + Eq, V: 'a, S: BuildHasher> VacantEntry<'a, K, V, S> {
+impl<'a, K: 'a + Hash + Eq, V: 'a, S: BuildHasher + Clone> VacantEntry<'a, K, V, S> {
     /// Gets a reference to the entry key
     ///
     /// # Examples
@@ -1303,8 +1453,8 @@ impl<'a, K: 'a + Hash + Eq, V: 'a, S: BuildHasher> VacantEntry<'a, K, V, S> {
 
         self.map.attach(node);
 
-        let ret = self.map.map.entry(KeyRef{k: keyref}).or_insert(node);
-        unsafe { &mut (**ret).value }
+        let ret = self.map.map.entry(KeyRef { k: keyref }).or_insert(node);
+        unsafe { &mut (**ret.value()).value }
     }
 }
 
