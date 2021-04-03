@@ -18,11 +18,10 @@ exclude = ["/.travis.yml", "/deploy-docs.sh"]
 
 [features]
 nightly = []
-serde_impl = ["serde", "serde_test"]
-heapsize_impl = ["heapsize"]
 
 [dependencies]
+dashmap = { version = "4.0", optional = false, features = ["serde"]}
 clippy = { version = "0.*", optional = true }
-serde = { version = "1.0", optional = true }
-serde_test = { version = "1.0", optional = true }
-heapsize = { version = "0.4", optional = true }
+serde = { version = "1.0", optional = false }
+serde_test = { version = "1.0", optional = false }
+heapsize = { version = "0.4", optional = false }
